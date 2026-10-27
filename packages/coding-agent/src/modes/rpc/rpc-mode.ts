@@ -414,7 +414,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				const disposition = await session.steer(command.message, command.images, { source: "rpc" });
+				const options = { source: "rpc" } as const;
+				const disposition = command.ifRunning
+					? await session.steerIfRunning(command.message, command.images, options)
+					: await session.steer(command.message, command.images, options);
 				return success(id, "steer", { disposition });
 			}
 

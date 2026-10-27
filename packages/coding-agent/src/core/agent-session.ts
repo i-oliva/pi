@@ -309,6 +309,8 @@ export interface ExtensionBindings {
 }
 
 export type QueuedInputDisposition = "handled" | "queued";
+/** "idle": no run was active. "expired": the run ended while input handlers ran. Nothing was queued. */
+export type RunSteeringDisposition = QueuedInputDisposition | "idle" | "expired";
 export type PromptDisposition = QueuedInputDisposition | "started";
 
 /** Options for AgentSession.prompt() */
@@ -393,6 +395,10 @@ export class AgentSession {
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
+	/** Identifies the active run for steerIfRunning(); replaced by every run, cleared when it ends. */
+	private _steeringRun: object | undefined;
+	/** Steering queued by steerIfRunning() and not yet delivered, with its display text. */
+	private _runSteering = new Map<AgentMessage, string>();
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -1120,6 +1126,7 @@ export class AgentSession {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
+			this._runSteering.delete(event.message);
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {
@@ -1873,10 +1880,12 @@ export class AgentSession {
 	private async _startRun(trigger: BeforeAgentStartTrigger, onStarted?: () => void): Promise<void> {
 		this._isAgentRunActive = true;
 		this._agentRunAbortRequested = false;
+		this._steeringRun = {};
 		let messages: AgentMessage[];
 		try {
 			messages = await this._prepareRun(trigger);
 		} catch (error) {
+			this._endRunSteering();
 			this._isAgentRunActive = false;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
@@ -1908,6 +1917,7 @@ export class AgentSession {
 				await this.agent.continue();
 			}
 		} finally {
+			this._endRunSteering();
 			if (this._agentRunAbortRequested) this._finishCancelledRetry();
 			this._failedResponse = undefined;
 			this._runSystemPromptOptions = undefined;
@@ -2281,6 +2291,44 @@ export class AgentSession {
 	}
 
 	/**
+	 * Steer the active run only. Unlike steer(), nothing is queued when no run is active, and
+	 * steering the run did not deliver (for example after an abort) is removed when it ends instead
+	 * of being sent with the next prompt.
+	 * @throws Error if text is an extension command
+	 */
+	async steerIfRunning(
+		text: string,
+		images?: ImageContent[],
+		options?: { source?: InputSource },
+	): Promise<RunSteeringDisposition> {
+		const run = this._steeringRun;
+		if (!run || this._agentRunAbortRequested) return "idle";
+		if (text.startsWith("/")) {
+			this._throwIfExtensionCommand(text);
+		}
+		const processedInput = await this._runInputHandlers(text, images, options?.source ?? "interactive", "steer");
+		if (!processedInput) return "handled";
+		if (this._steeringRun !== run || this._agentRunAbortRequested) return "expired";
+		const expandedText = expandPromptTemplate(this._expandSkillCommand(processedInput.text), [
+			...this.promptTemplates,
+		]);
+		await this._queueSteer(expandedText, processedInput.images, true);
+		return "queued";
+	}
+
+	private _endRunSteering(): void {
+		this._steeringRun = undefined;
+		if (this._runSteering.size === 0) return;
+		for (const [message, text] of this._runSteering) {
+			this.agent.removeQueuedSteering(message);
+			const index = this._steeringMessages.lastIndexOf(text);
+			if (index !== -1) this._steeringMessages.splice(index, 1);
+		}
+		this._runSteering.clear();
+		this._emitQueueUpdate();
+	}
+
+	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 * Expands skill commands and prompt templates. Errors on extension commands.
@@ -2299,18 +2347,16 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(text: string, images?: ImageContent[], runOnly = false): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
-			role: "user",
-			content,
-			timestamp: Date.now(),
-		});
+		const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+		if (runOnly) this._runSteering.set(message, text);
+		this.agent.steer(message);
 	}
 
 	/**
@@ -2468,6 +2514,7 @@ export class AgentSession {
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
+		this._runSteering.clear();
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };

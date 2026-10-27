@@ -65,6 +65,14 @@ Response:
 
 `data.disposition` is `"handled"` if an input handler consumed this steer, or `"queued"` if Pi queued it (including after a handler transformed it). It does not guarantee this message remains queued.
 
+Without `ifRunning`, a steer sent while no run is active is still queued and goes out with the next prompt. A client cannot rule that out, because the run can end between deciding to steer and Pi receiving the command. Set `"ifRunning": true` to steer the active run only:
+
+```json
+{"type": "steer", "message": "Use the other API", "ifRunning": true}
+```
+
+`data.disposition` is then `"idle"` when no run was active and `"expired"` when the run ended while input handlers ran. Nothing is queued in either case, so the client can send the text as a normal `prompt`. A message queued this way that the run does not deliver, for example after `abort`, is removed when the run ends.
+
 See [set_steering_mode](#set_steering_mode) for controlling how steering messages are processed.
 
 ### follow_up

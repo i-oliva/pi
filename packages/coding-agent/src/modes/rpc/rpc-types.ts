@@ -7,7 +7,12 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
-import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
+import type {
+	PromptDisposition,
+	QueuedInputDisposition,
+	RunSteeringDisposition,
+	SessionStats,
+} from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -20,7 +25,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
-	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
+	| { id?: string; type: "steer"; message: string; images?: ImageContent[]; ifRunning?: boolean }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "clear_queue" }
@@ -116,7 +121,7 @@ export interface RpcSessionState {
 export type RpcResponse =
 	// Prompting
 	| { id?: string; type: "response"; command: "prompt"; success: true; data: { disposition: PromptDisposition } }
-	| { id?: string; type: "response"; command: "steer"; success: true; data: { disposition: QueuedInputDisposition } }
+	| { id?: string; type: "response"; command: "steer"; success: true; data: { disposition: RunSteeringDisposition } }
 	| {
 			id?: string;
 			type: "response";
